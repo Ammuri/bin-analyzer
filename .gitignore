@@ -1,0 +1,25 @@
+## .gitignore
+
+```gitignore
+# Build artifacts
+/build/
+/CMakeFiles/
+/CMakeCache.txt
+/*.cmake
+/Makefile
+/compile_commands.json
+binheaderscout.exe
+
+# Binaries & objects
+/bin-analyzer
+*.o
+*.obj
+
+# IDE & editors
+.vscode/
+.idea/
+*.sublime*
+
+# OS files
+.DS_Store
+Thumbs.db
