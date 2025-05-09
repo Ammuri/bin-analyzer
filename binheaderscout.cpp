@@ -5,32 +5,43 @@
 #include <span>
 #include <string_view>
 #include <variant>
+#include <bit>
 #include "json.hpp"
 
 using std::cout;
 
 using json = nlohmann::json;
 using ByteBuf = std::array<std::byte, 256>;
+using Word_64 = std::array<std::byte, 8>; // 8 bytes in a 64-bit architecture
+using Dword_64 = std::array<std::byte, 16>;
 
 ByteBuf read_prefix(const std::filesystem::path& p);
 enum class Format { Unknown, Elf32, Elf64, Pe };
 Format detect_format(std::span<const std::byte> ptr_to_buffer);
 
 struct ElfInfo { /* minimal fields */ };
-struct PeInfo  { /* minimal fields */ };
 
-//std::variant<std::monostate, ElfInfo, PeInfo>
-//parse_header(Format, std::span<const std::byte>);
+struct PeInfo  
+{ 
+    Word_64 Machine;
+    Word_64 NumberOfSections;
+    Dword_64 TimeDateStamp;
+    Dword_64 PointerToSymbolTable;
+    Dword_64 NumberOfSymbols;
+    Word_64 SizeOfOptionalHeader;
+    Word_64 Characteristics;
+
+};
+
+std::variant<std::monostate, ElfInfo, PeInfo>
+parse_header(Format, std::span<const std::byte>);
 
 int main(int argc, char** argv)
 {
     if (argc != 2) { std::cerr << "usage: binheaderscout <file>\n..."; return 1; }
     auto buf   = read_prefix(argv[1]);      // read first 256 bytes
     auto fmt   = detect_format(buf);        // look at magic bytes
-    if(fmt == Format::Pe)
-        cout << "Format is PE" << "\n";
-
-    // auto info  = parse_header(fmt, buf);    // reinterpret into structs
+    auto info  = parse_header(fmt, buf);    // reinterpret into structs
 
     // json j;
     // std::visit([&](auto&& hdr){
@@ -68,12 +79,12 @@ ByteBuf read_prefix(const std::filesystem::path& p)
     return buffer;
 }
 
-Format detect_format(std::span<const std::byte> ptr_to_buffer)
+Format detect_format(std::span<const std::byte> buffer)
 {
     // Checking the first two bytes (e_magic) to determine if it's a PE file
-    if(ptr_to_buffer.size() >= 2 &&
-        ptr_to_buffer[0] == std::byte{'M'} &&
-        ptr_to_buffer[1] == std::byte{'Z'})
+    if(buffer.size() >= 2 &&
+        buffer[0] == std::byte{'M'} &&
+        buffer[1] == std::byte{'Z'})
         {
             return Format::Pe;
         }
@@ -86,4 +97,26 @@ Format detect_format(std::span<const std::byte> ptr_to_buffer)
     //         }
     
     return Format::Unknown;
+}
+
+//Not really sure what I want to do with this yet...
+// Let's just start by grabbing the file header and populating the struct PeInfo
+// PE signature starts at (0x50 0x45 0x00 0x00) : "PE.."
+std::variant<std::monostate, ElfInfo, PeInfo>
+parse_header(Format fmt, std::span<const std::byte> buffer)
+{
+    // I can just write a loop to get to the hex "PE..".
+    // Might be a little more efficient to use the address from e_lfanew instead
+
+    if(fmt == Format::Unknown)
+        return std::monostate{};
+
+    // e_lfanew is always 0x3C (60 in dec) and is 4 bytes long
+    std::span<const std::byte> e_lfanew = buffer.subspan(60, 4);
+
+    std::array<std::byte, 4> tmp;
+    std::copy_n(e_lfanew.begin(), 4, tmp.begin());
+
+    auto offset = std::bit_cast<std::uint32_t>(tmp);
+
 }
