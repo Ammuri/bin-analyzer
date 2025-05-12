@@ -13,11 +13,14 @@ using std::cout, std::endl;
 using json = nlohmann::json;
 using ByteBuf = std::array<std::byte, 256>;
 using PeHeaderBuf = std::array<std::byte, 20>;
-using Word = uint16_t;
-using Dword = uint32_t;
+using DynamicBuffer = std::vector<char>;
+using BYTE = uint8_t;
+using WORD = uint16_t;
+using DWORD = uint32_t;
 
 ByteBuf read_prefix(const std::filesystem::path& p);
 enum class Format { Unknown, Elf32, Elf64, Pe };
+enum class Section {PE_FILE_HEADER, PE_OPTIONAL_HEADER};
 Format detect_format(std::span<const std::byte> ptr_to_buffer);
 
 struct ElfInfo { /* minimal fields */ };
@@ -26,19 +29,58 @@ struct ElfInfo { /* minimal fields */ };
 // This allows for a one-shot memcpy from the buffer (.exe) to the struct.
 struct [[gnu::packed]] PeInfo  
 { 
-    Word Machine;
-    Word NumberOfSections;
-    Dword TimeDateStamp;
-    Dword PointerToSymbolTable;
-    Dword NumberOfSymbols;
-    Word SizeOfOptionalHeader;
-    Word Characteristics;
+    WORD    Machine;
+    WORD    NumberOfSections;
+    DWORD   TimeDateStamp;
+    DWORD   PointerToSymbolTable;
+    DWORD   NumberOfSymbols;
+    WORD    SizeOfOptionalHeader;
+    WORD    Characteristics;
 
+};
+
+
+PeHeaderBuf read_pe_header(const std::filesystem::path& p, uint32_t offset);
+
+struct [[gnu::packed]] PeOptionalHeader
+{
+    WORD    Magic;                          // Important field defines architecture of executable (32-bit or 64-bit)
+    BYTE    MajorLinkerVersion; 
+    BYTE    MinorLinkerVersion; 
+    DWORD   SizeOfCode; 
+    DWORD   SizeOfInitializedData;  
+    DWORD   SizeOfUninitializedData;    
+    DWORD   AddressOfEntryPoint;            // Address where the windows loader will begin execution
+    DWORD   BaseOfCode;                     // Relative Virtual Address to Code section
+    DWORD   BaseOfData;                     // Relative Virtual Address to Data section
+    DWORD   ImageBase;  
+    DWORD   SectionAlignment;               // Indicates alignment of sections of PE in the memory
+    DWORD   FileAlignment;                  // Indicates alignment of sections of PE in the file
+    WORD    MajorOperatingSystemVersion;
+    WORD    MinorOperatingSystemVersion;
+    WORD    MajorImageVersion;
+    WORD    MinorImageVersion;
+    WORD    MajorSubsystemVersion;
+    WORD    MinorSubsystemVersion;
+    DWORD   Win32VersionValue;
+    DWORD   SizeOfImage;                    // Indicates memory size occupied by the PE file on runtime (has to be a multipule of the SectionAlignment values)
+    DWORD   SizeOfHeaders;
+    DWORD   CheckSum;
+    WORD    Subsystem;                      // Identifies the target subsystem for an executable file
+    WORD    DllCharacteristics;
+    DWORD   SizeOfStackReserve;
+    DWORD   SizeOfStackCommit;
+    DWORD   SizeOfHeapReserve;
+    DWORD   SizeOfHeapCommit;
+    DWORD   LoaderFlags;
+    DWORD   NumberOfRvaAndSizes;
 };
 
 std::variant<std::monostate, ElfInfo, PeInfo>
 parse_header(Format, std::span<const std::byte>, const std::filesystem::path& p);
-PeHeaderBuf read_pe_header(const std::filesystem::path& p, uint32_t offset);
+
+std::variant<std::monostate, PeHeaderBuf, DynamicBuffer>
+read_n_bytes_from_bin(Section section, const std::filesystem::path& p, uint32_t offset, uint16_t size);
 
 int main(int argc, char** argv)
 {
@@ -47,13 +89,13 @@ int main(int argc, char** argv)
     auto fmt   = detect_format(buf);        // look at magic bytes
     auto info  = parse_header(fmt, buf, argv[1]);    // reinterpret into structs
 
-    if (auto peInfo = std::get_if<PeInfo>(&info))
-    {
-        cout << peInfo->Machine << endl;
-    } else
-    {
-        cout << "Not a PE file or invalid format" << endl;
-    }
+    // if (auto peInfo = std::get_if<PeInfo>(&info))
+    // {
+    //     cout << peInfo->Machine << endl;
+    // } else
+    // {
+    //     cout << "Not a PE file or invalid format" << endl;
+    // }
 
     // json j;
     // std::visit([&](auto&& hdr){
@@ -75,7 +117,7 @@ ByteBuf read_prefix(const std::filesystem::path& p)
     std::ifstream ReadFile(p, std::ifstream::binary);
 
     if(!ReadFile)
-        throw std::runtime_error("Cannot open" + p.string());
+        throw std::runtime_error("Cannot open " + p.string());
 
     ByteBuf buffer{};
 
@@ -114,6 +156,7 @@ Format detect_format(std::span<const std::byte> buffer)
 //Not really sure what I want to do with this yet...
 // Let's just start by grabbing the file header and populating the struct PeInfo
 // PE signature starts at (0x50 0x45 0x00 0x00) : "PE.."
+// Updating this to also grab the PE optional header
 std::variant<std::monostate, ElfInfo, PeInfo>
 parse_header(Format fmt, std::span<const std::byte> buffer, const std::filesystem::path& p)
 {
@@ -134,7 +177,7 @@ parse_header(Format fmt, std::span<const std::byte> buffer, const std::filesyste
 
     // Might have to read more to grab the PE signature.
     // 24 = "PE  " (4 bytes) + PE header (20 bytes)
-    if((offset + 24) >= buffer.size())
+    if((offset + 24) > buffer.size())
     {
         auto pe_buffer = read_pe_header(p, offset);
 
@@ -148,6 +191,9 @@ parse_header(Format fmt, std::span<const std::byte> buffer, const std::filesyste
     const std::byte* src = buffer.data() + offset + 4; // 4 bytes for "PE"
     std::memcpy(&peinfo, src, sizeof(peinfo));
 
+    // call function to read PE optional header
+    
+
     return peinfo;
 }
 
@@ -158,7 +204,7 @@ PeHeaderBuf read_pe_header(const std::filesystem::path& p, uint32_t offset)
     std::ifstream ReadFile(p, std::ifstream::binary);
 
     if(!ReadFile)
-        throw std::runtime_error("Cannot open" + p.string());
+        throw std::runtime_error("Cannot open " + p.string());
 
     PeHeaderBuf pe_buffer{};
 
@@ -173,4 +219,34 @@ PeHeaderBuf read_pe_header(const std::filesystem::path& p, uint32_t offset)
         throw std::runtime_error("Invalid file input... aborting.");
 
     return pe_buffer;
+}
+
+std::variant<std::monostate, PeHeaderBuf, DynamicBuffer>
+read_n_bytes_from_bin(Section section, const std::filesystem::path& p, uint32_t offset, uint16_t size)
+{
+    std::ifstream ReadFile(p, std::ifstream::binary);
+
+    if(!ReadFile)
+        throw std::runtime_error("Cannot open " + p.string());
+
+    switch(section)
+    {
+        case Section::PE_FILE_HEADER:
+            break;
+        
+        case Section::PE_OPTIONAL_HEADER:
+            DynamicBuffer buffer(size);
+            
+            ReadFile.seekg(offset, ReadFile.beg);
+            ReadFile.read(buffer.data(), buffer.size());
+            std::size_t bytesRead = ReadFile.gcount();
+
+            if(bytesRead < size)
+                throw std::runtime_error("Invalid file input... aborting");
+            
+            return buffer;
+    }
+
+    return std::monostate{};
+
 }
