@@ -8,6 +8,8 @@
 #include <bit>
 #include "json.hpp"
 
+uint32_t offset = 0;
+
 using std::cout, std::endl;
 
 using json = nlohmann::json;
@@ -20,7 +22,6 @@ using DWORD = uint32_t;
 
 ByteBuf read_prefix(const std::filesystem::path& p);
 enum class Format { Unknown, Elf32, Elf64, Pe };
-enum class Section {PE_FILE_HEADER, PE_OPTIONAL_HEADER};
 Format detect_format(std::span<const std::byte> ptr_to_buffer);
 
 struct ElfInfo { /* minimal fields */ };
@@ -42,7 +43,7 @@ struct [[gnu::packed]] PeInfo
 
 PeHeaderBuf read_pe_header(const std::filesystem::path& p, uint32_t offset);
 
-struct [[gnu::packed]] PeOptionalHeader
+struct [[gnu::packed]] PeOptionalHeaderInfo
 {
     WORD    Magic;                          // Important field defines architecture of executable (32-bit or 64-bit)
     BYTE    MajorLinkerVersion; 
@@ -79,8 +80,7 @@ struct [[gnu::packed]] PeOptionalHeader
 std::variant<std::monostate, ElfInfo, PeInfo>
 parse_header(Format, std::span<const std::byte>, const std::filesystem::path& p);
 
-std::variant<std::monostate, PeHeaderBuf, DynamicBuffer>
-read_n_bytes_from_bin(Section section, const std::filesystem::path& p, uint32_t offset, uint16_t size);
+DynamicBuffer read_n_bytes_from_bin(const std::filesystem::path& p, uint32_t offset, uint16_t size);
 
 int main(int argc, char** argv)
 {
@@ -89,13 +89,19 @@ int main(int argc, char** argv)
     auto fmt   = detect_format(buf);        // look at magic bytes
     auto info  = parse_header(fmt, buf, argv[1]);    // reinterpret into structs
 
-    // if (auto peInfo = std::get_if<PeInfo>(&info))
-    // {
-    //     cout << peInfo->Machine << endl;
-    // } else
-    // {
-    //     cout << "Not a PE file or invalid format" << endl;
-    // }
+    if (auto peInfo = std::get_if<PeInfo>(&info))
+    {
+        // This section deals with reading the optional header from the PE bin.
+        offset += 24;
+        DynamicBuffer pe_optional_header_buffer = read_n_bytes_from_bin(argv[1], offset, peInfo->SizeOfOptionalHeader);
+        PeOptionalHeaderInfo pe_optional_header_info;
+        std::memcpy(&pe_optional_header_info, pe_optional_header_buffer.data(), sizeof(pe_optional_header_info));
+
+        cout << "This is a PE file! But there's still much more to do" << endl;
+    } else
+    {
+        cout << "Not a PE file or invalid format" << endl;
+    }
 
     // json j;
     // std::visit([&](auto&& hdr){
@@ -173,7 +179,9 @@ parse_header(Format fmt, std::span<const std::byte> buffer, const std::filesyste
     std::copy_n(e_lfanew.begin(), 4, tmp.begin());
 
     // Address to the PE header in uint32_t
-    auto offset = std::bit_cast<std::uint32_t>(tmp);
+    offset = std::bit_cast<std::uint32_t>(tmp);
+
+    PeInfo peinfo;
 
     // Might have to read more to grab the PE signature.
     // 24 = "PE  " (4 bytes) + PE header (20 bytes)
@@ -181,18 +189,15 @@ parse_header(Format fmt, std::span<const std::byte> buffer, const std::filesyste
     {
         auto pe_buffer = read_pe_header(p, offset);
 
-        PeInfo peinfo;
         // TODO - Write into PE struct
     }
+    else
+    {
+        // PE signature is part of initial 256 buffer.
 
-    // PE signature is part of initial 256 buffer.
-    PeInfo peinfo;
-
-    const std::byte* src = buffer.data() + offset + 4; // 4 bytes for "PE"
-    std::memcpy(&peinfo, src, sizeof(peinfo));
-
-    // call function to read PE optional header
-    
+        const std::byte* src = buffer.data() + offset + 4; // 4 bytes for "PE"
+        std::memcpy(&peinfo, src, sizeof(peinfo));
+    }
 
     return peinfo;
 }
@@ -221,32 +226,26 @@ PeHeaderBuf read_pe_header(const std::filesystem::path& p, uint32_t offset)
     return pe_buffer;
 }
 
-std::variant<std::monostate, PeHeaderBuf, DynamicBuffer>
-read_n_bytes_from_bin(Section section, const std::filesystem::path& p, uint32_t offset, uint16_t size)
+
+DynamicBuffer read_n_bytes_from_bin(const std::filesystem::path& p, uint32_t offset, uint16_t size)
 {
     std::ifstream ReadFile(p, std::ifstream::binary);
 
     if(!ReadFile)
         throw std::runtime_error("Cannot open " + p.string());
 
-    switch(section)
-    {
-        case Section::PE_FILE_HEADER:
-            break;
-        
-        case Section::PE_OPTIONAL_HEADER:
-            DynamicBuffer buffer(size);
-            
-            ReadFile.seekg(offset, ReadFile.beg);
-            ReadFile.read(buffer.data(), buffer.size());
-            std::size_t bytesRead = ReadFile.gcount();
+    DynamicBuffer buffer(size);
 
-            if(bytesRead < size)
-                throw std::runtime_error("Invalid file input... aborting");
-            
-            return buffer;
-    }
+    // set position in input sequence to the offset
+    ReadFile.seekg(offset, ReadFile.beg);
 
-    return std::monostate{};
+    ReadFile.read(reinterpret_cast<char*>(buffer.data()), size);
+    std::size_t bytesRead = ReadFile.gcount();
+
+    // Aborting when the file is less than 20 bytes.
+    if(bytesRead < size)
+        throw std::runtime_error("Invalid file input... aborting.");
+
+    return buffer;
 
 }
